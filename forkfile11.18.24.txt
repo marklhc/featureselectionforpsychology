@@ -1,0 +1,688 @@
+---
+title: "LASSO Addendum"
+format: html
+editor: visual
+---
+
+## Addendum: Using LASSO as Feature Selection for Psychologists in R
+
+As an addendum, I will walk through the use of LASSO for feature selection on a psychological dataset in R. LASSO is a regression method that performs variable selection and regularization. LASSO is essentially an extension of ordinary least squares where a penalty term is added to the loss function, resulting in "weightings" of coefficients. The penalty term in LASSO (L1 regularization) uses absolute value, whereas the penalty term in the very-similar ridge regression uses squared values (L2 regularization, which we will discuss in the adaptive LASSO section below). LASSO can reduce a predictor's weight to 0, removing it from the model, which makes it more suitable for feature selection than ridge regression. The latter is best for handling highly collinear predictors, which we will also check soon since LASSO can handle multicollinearity, but only to an extent.
+
+LASSO uses a least-squares "shrinkage operator", so we should make sure we can fit a linear model with our AMATUS data first. We'll check assumptions and conduct exploratory data analysis. It's more okay if the data seems to be less fitting of a linear model after LASSO calculation (more on this later), but we definitely want to make sure we could fit a linear model with our 10 variables as is.
+
+As part of the AMATUS dataset, the original researchers already calculated a correlation matrix for the variables we're interested in. To save you time, I'll tell you right now that the variables that are correlated with each other to a potentially problematic extent are math self-efficacy and self-concept positively (duh) and math self-concept as well as math self-efficacy with math anxiety, negatively. This shouldn't cause too many issues because LASSO and ridge regression can handle multicollinearity, but it's likely that in some models, one of these variables will be picked and the other will be ignored since they cover much of the same ground. So don't be surprised if one LASSO model picks for example SDQ_M and another picks PISA_ME, as they explain much of the same variance.
+
+```{r}
+library(ggplot2)
+library(olsrr) #nice tools for linear regression
+library(caret)
+library(MASS)
+library(dplyr)
+library(car)
+library(glmnet)
+
+AMASplot<-ggplot(data=amatusclean,aes(x=score_AMAS_total,y=sum_arith_perf))
+AMASplot<-AMASplot+geom_point(fill="lightskyblue1",color="black")
+AMASplot<-AMASplot+geom_count(show.legend = TRUE)
+AMASplot<-AMASplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+AMASplot<-AMASplot+geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(method = "loess", se = FALSE) 
+AMASplot
+
+#modestly linear, right tail deviates. 
+
+```
+
+```{r}
+lassoamatus<-amatusclean
+ageplot<-ggplot(data=lassoamatus,aes(x=age,y=sum_arith_perf))
+ageplot<-ageplot+geom_point(fill="lightskyblue1",color="black")
+ageplot<-ageplot+geom_count(show.legend = TRUE)
+ageplot<-ageplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+ageplot<-ageplot+geom_smooth(method = "lm", se = FALSE) 
+ageplot<-ageplot+geom_smooth(method = "loess", se = FALSE)
+ageplot
+#notreallylinear. A log transformation makes it look a little better.
+```
+
+```{r}
+bfiplot<-ggplot(data=lassoamatus,aes(x=score_BFI_N,y=sum_arith_perf))
+bfiplot<-bfiplot+geom_point(fill="lightskyblue1",color="black")
+bfiplot<-bfiplot+geom_count(show.legend = TRUE)
+bfiplot<-bfiplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+bfiplot<-bfiplot+geom_smooth(method = "lm", se = FALSE) +
+geom_smooth(method = "loess", se = FALSE) 
+bfiplot
+#Pretty damn linear.
+```
+
+```{r}
+gadplot<-ggplot(data=lassoamatus,aes(x=score_GAD,y=sum_arith_perf))
+gadplot<-gadplot+geom_point(fill="lightskyblue1",color="black")
+gadplot<-gadplot+geom_count(show.legend = TRUE)
+gadplot<-gadplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+gadplot<-gadplot+geom_smooth(method = "lm", se = FALSE) +
+geom_smooth(method = "loess", se = FALSE) 
+gadplot
+#modestly linear?
+```
+
+```{r}
+PISAplot<-ggplot(data=lassoamatus,aes(x=score_PISA_ME,y=sum_arith_perf))
+PISAplot<-PISAplot+geom_point(fill="lightskyblue1",color="black")
+PISAplot<-PISAplot+geom_count(show.legend = TRUE)
+PISAplot<-PISAplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+PISAplot<-PISAplot+geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(method = "loess", se = FALSE) 
+PISAplot
+#modestly linear.
+```
+
+```{r}
+STAIplot<-ggplot(data=lassoamatus,aes(x=score_STAI_state_short,y=sum_arith_perf))
+STAIplot<-STAIplot+geom_point(fill="lightskyblue1",color="black")
+STAIplot<-STAIplot+geom_count(show.legend = TRUE)
+STAIplot<-STAIplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+STAIplot<-STAIplot+geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(method = "loess", se = FALSE) 
+STAIplot
+#modestly linear, big deviation at right tail.
+```
+
+```{r}
+TAIplot<-ggplot(data=lassoamatus,aes(x=score_TAI_short,y=sum_arith_perf))
+TAIplot<-TAIplot+geom_point(fill="lightskyblue1",color="black")
+TAIplot<-TAIplot+geom_count(show.legend = TRUE)
+TAIplot<-TAIplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+TAIplot<-TAIplot+geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(method = "loess", se = FALSE) 
+TAIplot
+#Pretty linear, tiny deviation at right tail.
+```
+
+```{r}
+SDQ_Mplot<-ggplot(data=lassoamatus,aes(x=score_SDQ_M,y=sum_arith_perf))
+SDQ_Mplot<-SDQ_Mplot+geom_point(fill="lightskyblue1",color="black")
+SDQ_Mplot<-SDQ_Mplot+geom_count(show.legend = TRUE)
+SDQ_Mplot<-SDQ_Mplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+SDQ_Mplot<-SDQ_Mplot+geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(method = "loess", se = FALSE) 
+SDQ_Mplot
+##Vert linear, small deviation at left tail.
+
+```
+
+```{r}
+SDQ_Lplot<-ggplot(data=lassoamatus,aes(x=score_SDQ_L,y=sum_arith_perf))
+SDQ_Lplot<-SDQ_Lplot+geom_point(fill="lightskyblue1",color="black")
+SDQ_Lplot<-SDQ_Lplot+geom_count(show.legend = TRUE)
+SDQ_Lplot<-SDQ_Lplot+scale_y_continuous(breaks=seq(0, 50, 5),limits=c(0,50))
+SDQ_Lplot<-SDQ_Lplot+geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(method = "loess", se = FALSE) 
+SDQ_Lplot
+#doesn't seem really linear, to be honest.
+```
+
+Honestly, most of these seem pretty linear, albeit with slight deviations at the ends for some. SDQ_L is pretty clearly not linear. We would probably want to use some nonlinear modeling techniques in a real analysis, something like splines or piecewise linear regression. But that is outside the scope of the paper, so we'll stick with it for now.
+
+#can maybe try splines. B-spline would have a penalty already. Is it used with LASSO or as a substitute for LASSO?
+
+## Running the Model
+
+Normally, you should naturally transform your variables to the desired distributions then run the model. In order to show you why you should do that, I will first run the model with no transformations.
+
+```{r}
+set.seed (150)#I'm going to put this before every random generation just for clarity. Probably should've put it before the data partition.
+inTrain<-createDataPartition(amatusclean$sum_arith_perf, p=0.7, list=FALSE)#0.7 selected to have a decent number of N in the test set
+
+#create training vs test data.
+training2<-amatusclean[inTrain,]
+test2<-amatusclean[-inTrain,]
+View(training2)
+View(test2)
+
+
+#Extracting the dataframe to keep things simple.
+numeric_predictors <- c("score_BFI_N", "score_AMAS_total", "age", "score_GAD", 
+                        "score_PISA_ME", "score_STAI_state_short", 
+                        "score_TAI_short", "score_SDQ_L", "score_SDQ_M")
+categorical_variable <- "sex"
+response_variable <- "sum_arith_perf"
+
+# Create a new dataframe by scaling and centering numeric predictors
+library(dplyr)
+scaled_training2 <- training2 %>%
+    select(all_of(numeric_predictors), all_of(categorical_variable), all_of(response_variable))
+
+scaled_training2 <- scaled_training2 %>%
+    mutate(across(where(is.numeric) & !all_of(c("sum_arith_perf", "sex")), 
+                  ~ scale(.) %>% as.vector())) 
+
+
+# View the scaled data
+View(scaled_training2)
+
+
+
+
+lambdamodel<-lm(sum_arith_perf~score_AMAS_total+sex+age+score_BFI_N+score_GAD+score_PISA_ME+score_STAI_state_short+score_TAI_short+score_SDQ_M+score_SDQ_L, data=scaled_training2) #we're calling it lambda for reasons to be made abundantly clear shortly
+summary(lambdamodel)
+##see residual/fitted plots, qq plots, and much more
+ols_plot_diagnostics(lambdamodel)
+##see residuals by variable, mostly for linearity.
+car::residualPlots(lambdamodel,
+                   pch=20, col="gray",
+                   fitted = F,
+                   ask = F, layout = c(3,2),
+                   tests = F)
+##see residuals by variable, mostly for heteroskedasticity, notice the fitted argument
+car::residualPlots(lambdamodel,
+                   pch=20, col="gray",
+                   ask = F, layout = c(3,2),
+                    fitted=T,
+                   tests = F)
+
+ggplot(lassoamatus, aes(x = sum_arith_perf)) +
+  geom_histogram(binwidth = 0.5, fill = "blue", color = "black") +
+  labs(title = "Histogram of Values", x = "Value", y = "Frequency")
+```
+
+Like we mentioned in the first document, the dependent variable was skewed right. So is our distribution of residuals, unsurprisingly. We're gonna need to try a transformation of the DV. Let's try a Box Cox transformation to center the varia- wait, we have two observations that are 0 and Box Cox doesn't work with those! We probably wouldn't lose variability if we just cut the two 0s. But that's lazy. Let's try an extremely similar transformation, a Yeo-Johnson transformation that can indeed handle values of 0.
+
+```{r}
+library(bestNormalize)
+library(car)
+#optimal lambda for Yeo-Johnson transformation? Let's find it.
+a<-boxCox(lambdamodel, family="yjPower", plotit = TRUE)
+optimal_lambda2 <- a$x[which.max(a$y)]
+optimal_lambda2
+#.58585856
+
+#Let's visualize it too. 
+crPlots(lambdamodel,
+             pch=20, col="gray",
+             smooth = list(smoother=car::gamLine))
+
+
+
+# Apply the Yeo-Johnson transformation manually
+yj_transform <- yeojohnson(scaled_training2$sum_arith_perf, lambda = optimal_lambda)
+
+scaled_training2$sum_arith_yj <- yj_transform$x.t
+# View the transformed data
+View(scaled_training2)
+
+ggplot(scaled_training2, aes(x = sum_arith_yj)) +
+  geom_histogram(binwidth = 0.3, fill = "blue", color = "black") +
+  labs(title = "Histogram of Values", x = "Value", y = "Frequency")
+
+View(scaled_training2)
+
+
+```
+
+```{r}
+#| echo: false
+transformedmodel<-lm(sum_arith_yj~score_AMAS_total+sex+age+score_BFI_N+score_GAD+score_PISA_ME+score_STAI_state_short+score_TAI_short+score_SDQ_M+score_SDQ_L, data=scaled_training2)
+summary(transformedmodel)
+ols_plot_diagnostics(transformedmodel)
+vif(transformedmodel)
+##see residuals by variable, mostly for linearity
+car::residualPlots(transformedmodel,
+                   pch=20, col="gray",
+                   fitted = F,
+                   ask = F, layout = c(3,2),
+                   tests = F)
+##see residuals by variable, mostly for heteroskedasticity, notice the fitted argument
+car::residualPlots(transformedmodel,
+                   pch=20, col="gray",
+                   ask = F, layout = c(3,2), fitted=T,
+                   tests = F)
+```
+
+This model looks so much better it's not even funny. Much better resid/fitted plot, much better QQ plot (though with some issues we'll mention in a second), and of course a much more reasonable DV plot.VIF numbers seem reasonable, but we'll keep an eye on it. Notice the residual histogram has an issue - there is a tail of low residual values (which can be spotted near the bottom of the residual/fitted graph.) This indicates the model is systematically underfitting certain values around 0. The QQ plot shows that our distribution is pretty normal, but there are a couple causes for concern, namely the over/under estimation at theoretical quantile values around 2 and -2, respectively. This probably indicates some polynomial terms may be necessary to add to the model, but I will need to confirm.
+
+Just for fun, we'll also try a model just cutting the outliers and also run a model with no SDQ_L.
+
+```{r}
+#no outlier model.
+scaled_training3<-scaled_training2
+scaled_training3<-scaled_training2[-c(502, 10, 477), ]
+transformedmodel2<-lm(sum_arith_yj~score_AMAS_total+sex+age+score_BFI_N+score_GAD+score_PISA_ME+score_STAI_state_short+score_TAI_short+score_SDQ_M+score_SDQ_L, data=scaled_training3)
+ols_plot_diagnostics(transformedmodel2)
+
+#####No SDQ_L model.
+transformedmodel3<-lm(sum_arith_yj~score_AMAS_total+sex+age+score_BFI_N+score_GAD+score_PISA_ME+score_STAI_state_short+score_TAI_short+score_SDQ_M, data=scaled_training2)
+ols_plot_diagnostics(transformedmodel3)
+
+View(scaled_training2)
+
+a<-boxCox(lambdamodel, family="yjPower", plotit = TRUE)
+optimal_lambda2 <- a$x[which.max(a$y)]
+optimal_lambda2
+```
+
+Removing the outliers cleaned up the numbers a little but didn't address the issue of mild nonlinearity at certain points for the regression model. Cutting SDQ_L did the same thing, made the QQ plot a little nicer but not so much that we don't notice that weird overfitting at the higher end of the theoretical quantiles. We'll see if we can clean up these variables a little bit more before running our models.
+
+Okay, LASSO. Let's just run it and see what we get.
+
+```{r}
+library
+R.version.string
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+library(glmnet)
+##we need to turn the dataframe into a matrix
+x2<- model.matrix(~score_AMAS_total+sex+age+score_BFI_N+score_GAD+score_PISA_ME+score_STAI_state_short+score_TAI_short+score_SDQ_M+score_SDQ_L - 1, data = scaled_training2)
+
+x2 <- x2[, -3]
+y2<-scaled_training2$sum_arith_yj
+y2
+set.seed(151)
+cv_model <- cv.glmnet(x2, y2, alpha = 1) 
+
+plot(cv_model)
+
+#The upper and lower bars are the MSE +- standard error.
+set.seed(151)
+best_lambda <- cv_model$lambda.min
+print(best_lambda)
+#after we set the lambda, we run the model!
+set.seed(152)
+lassomodel <- glmnet(x2, y2, alpha = 1, lambda =best_lambda)
+
+lassomodel
+lassomodel$dev.ratio
+lassomodel$#is the fraction of (null) deviance explained. Pretty good GOF estimator but we'll find another soon.
+
+print(coef(lassomodel))
+View(test2)
+
+#SECOND TRY - NOW WITH LAMBDA that minimizes CV error plus one standard error.
+set.seed(151)
+best_lambda2 <- cv_model$lambda.1se
+print(best_lambda2)
+#after we set the lambda, we run the model!
+set.seed(152)
+lassomodel2 <- glmnet(x2, y2, alpha = 1, lambda = best_lambda2)
+
+lassomodel2
+print(coef(lassomodel2)) 
+
+lassomodel2$dev.ratio #is the fraction of (null) deviance explained. Pretty good GOF estimator but we'll find another soon.
+#This may be a better model, tbh. Let's test later.
+
+
+##GOOD IDEA: CHECK FOR DIAGNOSTIC PLOTS (AND STATS) OF YOUR TWO LASSO MODELS. SEE IF THERE ARE MANUAL PLOT COMMANDS FOR LASSO (PARTICULARLY RESIDS), COULD BE SOMETHING YOU WRITE OR WRITE UP WELL.
+##CHECK FOR OTHER THINGS LIKE ROBUST LASSO/ADAPTIVE LASSO ETC. SEE WHAT WOULD FIT YOUR DATA BEST. PROBABLY SOMETHING THAT GIVES ROBUST ERRORS DUE TO YOUR MILD HETEROSKEDASTICITY.
+#THE ROBUSTIFICATION OF THE LASSO AND ELASTIC NET DISSERTATION BY (?MATT MULTACH)
+vif(lassomodel)
+
+
+```
+
+Keep in mind that the cross-validation we used is attempting to estimate the value of lambda that leads to the minimal prediction error. In other words, the lambda is being selected to predict the best, NOT to select the "best" model. The lambda that is chosen using cross validation is chosen using MSE, which may lead to a "bigger" model than if we were trying to optimize the lambda to "produce the correct model"/"select the relevant predictors". This is a huge caveat, and something you need to consider when you are thinking about WHY you are using LASSO. You can read more at the following link:
+
+(more here: https://stats.stackexchange.com/questions/353185/why-using-cross-validation-is-not-a-good-option-for-lasso-regression)
+
+You can "I have had much better luck applying Lasso(𝜆) to select the model and then fitting by least squares, then applying cross-validation to this entire procedure to select 𝜆. It's still not ideal, but it is a big improvement."
+
+or this "for the particular training fold, CV is applied again to find an optimal 𝜆 in that iteration; or apply CV in two batches, first a set of optimization-CV to find an optimal 𝜆 then fix that value when fitting LASSO models in a another batch set of validation-CV steps to assess model error."
+
+###might be better to just see what variables are being used in the lowest prediction error model? or which variables tend to have the lowest prediction error? Can always try this other perspective, or at LEAST discuss it further than what I currently have. Dr. Lai doesn't really believe in "true" models, for example.
+
+```{r}
+# Design matrix and response vector
+
+
+# Cross validation
+set.seed(1)
+lasso.cv <- cv.glmnet(x2, y2)
+
+# Prediction
+yhat <- predict(lasso.cv, newx = x2)
+
+# residuals
+res <- y2- yhat
+res
+plot(res ~ yhat)
+```
+
+As you can see, there is a slight pattern in the residuals, namely that lower predicted values tend to have lower residuals and higher predicted values tend to have higher residuals. However, LASSO does not call for any particular distribution of its residuals. Recall what LASSO does - it is not a model, with a linear model being denoted by y = XB + e. It is a coefficient estimation method/variable selection method that uses a shrinkage term to anticipate the decrease in model fit when used on test data, which introduces some bias but reduces variance. Because the LASSO function only takes y (the dependent variable) and X (the predictors) while producing B (the coefficients, there are no assumptions regarding the distribution of e, errors. Thus, this residual pattern is not concerning. In fact, it may even be expected due to the fact that LASSO will shift predicted values closer to the mean, meaning (get it?) residuals may display a pattern like the one we see above.
+
+Let's keep looking at both models with the differing values of lambda. I think it's probably fair to say that the model with the lambda.min value may be better at prediction, but may not contain the "correct" subset of variables, whereas the lambda.1se value produces a more sparse model that is more likely to contain the true set of variables.
+
+Let's try including the selected variables of both values of lambda in a random forest model and see the models' stats.
+
+```{r}
+library(caret)
+####TESTING ACCURACY OF MODEL ON TEST SET!
+#First, we'll make sure we have a spare test set in case anything goes horribly wrong.
+test2.0<-test2
+View(test2)
+View(training2)
+#We'll also save the actuals so we have them.
+actuals <- test2$sum_arith_perf
+View(actuals)
+View(test2)
+View(test2.0)
+#let's do the test set
+#Extracting the dataframe to keep things simple.
+numeric_predictors2 <- c("score_BFI_N", "score_AMAS_total", "age", "score_GAD", 
+                        "score_PISA_ME", "score_STAI_state_short", 
+                        "score_TAI_short", "score_SDQ_L", "score_SDQ_M")
+categorical_variable2 <- "sex"
+response_variable2 <- "sum_arith_perf"
+
+# Create a new dataframe 
+library(dplyr)
+scaled_test2 <- test2 %>%
+    select(all_of(numeric_predictors2), all_of(categorical_variable2), all_of(response_variable2))
+
+
+
+# View the raw test data before scaling
+View(scaled_test2)
+
+
+
+#first, find scaling parameters.
+
+scale(training2$score_BFI_N) #mean 23.41085, 6.200986
+scale(training2$score_AMAS_total)#18.08333, 6.487242
+scale(training2$age) #23.37016, 4.241794
+scale(training2$score_GAD) #12.48256, 3.958239
+scale(training2$score_PISA_ME)#20.58915, 3.328284
+scale(training2$score_STAI_state_short) #8.372093, 2.966662
+scale(training2$score_TAI_short)#11.01163, 3.716646
+scale(training2$score_SDQ_L)#13.7655, 2.350222
+scale(training2$score_SDQ_M)#11.69186, 3.078269
+#We then apply the exact same scaling to the test set. Since the test set is unseen data, we apply the TRAINING scaling parameters to the TEST set. We also do this so our predictions are not nonsensical.
+
+# Define the desired means and SDs for each predictor
+scaling_params <- list(
+  score_BFI_N = list(mean = 23.41085, sd = 6.200986),
+  score_AMAS_total = list(mean = 18.08333, sd = 6.487242),
+  age = list(mean = 23.37016, sd = 4.241794),
+  score_GAD = list(mean = 12.48256, sd = 3.958239),
+  score_PISA_ME = list(mean = 20.58915, sd = 3.328284),
+  score_STAI_state_short = list(mean = 8.372093, sd = 2.966662),
+  score_TAI_short = list(mean = 11.01163, sd = 3.716646),
+  score_SDQ_L = list(mean = 13.7655, sd = 2.350222),
+  score_SDQ_M = list(mean = 11.69186, sd = 3.078269)
+)
+
+# Apply scaling to 'age' and 'score_gad' using 'predictor' as the loop variable
+# Apply scaling to each variable in the test dataset
+for (predictor in names(scaling_params)) {
+  if (predictor %in% colnames(scaled_test2)) {  # Check if the predictor exists in the dataset
+    new_mean <- scaling_params[[predictor]]$mean
+    new_sd <- scaling_params[[predictor]]$sd
+    
+    # C
+    # Overwrite the original predictor with the scaled version
+    scaled_test2[[predictor]] <- (scaled_test2[[predictor]] - new_mean) / new_sd
+  } else {
+    warning(paste("Variable", predictor, "not found in test dataset."))
+  }
+}
+
+View(scaled_test2)
+View(scaled_training2) #compare with train data, make sure all looks good.
+library(caret)
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search = "grid")
+tunegrid <- expand.grid(.mtry=c(2:8))
+set.seed(100)
+rf_lasso <- train(sum_arith_perf~sex+score_TAI_short+score_STAI_state_short+score_PISA_ME+score_SDQ_M+score_SDQ_L, data=scaled_training2, method="rf", importance=TRUE, tuneLength=10, trControl=control)
+
+print(rf_lasso)
+
+View(test2)
+View(scaled_training2)
+
+predictionslassomodel<-predict(rf_lasso,scaled_test2)
+validationlassomodel<-data.frame(R2 = R2(predictionslassomodel, scaled_test2 $ sum_arith_perf), 
+		RMSE = RMSE(predictionslassomodel, scaled_test2 $ sum_arith_perf), 
+		MAE = MAE(predictionslassomodel, scaled_test2 $ sum_arith_perf))#these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationlassomodel)
+#pretty strong prediction it would seem. I'm sure the model may be a bit 
+##put it back in the linear model for fun
+linearlassomodel2<-lm(sum_arith_yj~+sex+score_PISA_ME+score_STAI_state_short+score_SDQ_M, data=scaled_training2)
+summary(linearlassomodel2)
+ols_plot_diagnostics(linearlassomodel2)
+
+#1se version
+set.seed(101)
+rf_lasso_1se <- train(sum_arith_perf~sex+score_PISA_ME+score_SDQ_M, data=scaled_training2, method="rf", importance=TRUE, tuneLength=10, trControl=control)
+print(rf_lasso_1se)
+
+
+predictionslasso1semodel<-predict(rf_lasso_1se,scaled_test2)
+validationlasso1semodel<-data.frame(R2 = R2(predictionslasso1semodel, scaled_test2 $ sum_arith_perf), 
+		RMSE = RMSE(predictionslasso1semodel, scaled_test2 $ sum_arith_perf), 
+		MAE = MAE(predictionslasso1semodel, scaled_test2 $ sum_arith_perf))#these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationlasso1semodel)
+
+
+
+```
+
+As we have determined across the two analysis methods we have used, age may be a useful variable to include in a strictly predictive model, but it does not seem to be a "key" variable in the sense that it has very little relationship with the dependent variable. Age may help clear up the picture of the dependent variable, but without sex, math self efficacy and math self-concept, it is essentially worthless. However, it does in fact seem that age can be useful in predicting the test data, so one should lean towards including the variable if they are strictly interested in prediction. In fact, given the relative weakness of most of our predictors, it is not unlikely that the full 10-predictor model (or 9-predictor, sans SDQ_L) may have the best predictive power on a larger test set, even if it includes several relatively unimportant variables.
+
+It appears clear that the second LASSO model only reports the necessary variables to explain the DV's variance, whereas the first model includes covariates to produce an "optimal" model without too many covariates, but enough to have better predictive power than say, a 5 variable model. In fact, such a model is likely better at prediction than the fourth-selection model, which despite having the highest R squared of any model so far, may not generalize predictive ability as well as the first LASSO model outside of the relatively small test sample size. Across models, the inclusion of the age variable does not seem to contribute highly to the R squared of our models. The other seemingly key covariates of state anxiety and possibly text anxiety seem to add greater benefit in predictive modeling after we have naturally included the three main variables of sex, math self-efficacy, and math self-concept.
+
+```{r}
+
+```
+
+I also want to check out another LASSO model, one that popped up when I ran a different cv.glm for the lambda value. This one includes the seemingly key measures of anxiety.
+
+```{r}
+library(caret)
+
+
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search = "grid")
+mtry <- ncol(x)/3 
+set.seed(101)
+rf_lasso2 <- train(sum_arith_perf~sex+scale(score_AMAS_total)+scale(score_STAI_state_short)+scale(score_PISA_ME)+scale(score_SDQ_M), data=scaled_training2, method="rf", importance=TRUE, tuneLength=10, trControl=control)
+print(rf_lasso2)
+
+View(training2)
+View(test2)
+
+
+predictionslassomodel2<-predict(rf_lasso2,scaled_test2)
+validationlassomodel2<-data.frame(R2 = R2(predictionslassomodel2, scaled_test2$ sum_arith_perf), 
+		RMSE = RMSE(predictionslassomodel2, scaled_test2$ sum_arith_perf), 
+		MAE = MAE(predictionslassomodel2, scaled_test2$ sum_arith_perf))#these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationlassomodel2)
+#Insanely strong prediction. This is likely the best model if you're looking for 4-5 variables, I'd wager.
+```
+
+Probably should've assumed this model would be poor, but I wanted to test it anyways just to see if LASSO had missed something.
+
+Remember that with the way we selected the lambda value, LASSO is attempting to optimize for prediction. LASSO is NOT attempting to select only non-noise predictors given the "optimal" lambda. Therefore, if you were looking to use a smaller subset of predictors but retain great predictive accuracy, LASSO has you covered. If you're just looking to identify the "important" variables, we will soon look at another LASSO-adjacent method that purports to do just that with the optimal lambda.
+
+Before we try that final method however, let's do a little post-selection inference and try and see how our actual LASSO models look.
+
+```{r}
+library(selectiveInference)
+n<-nobs(lassomodel)
+fixedLassoInf(x2, y2, beta = coef(lassomodel, s=best_lambda/n)[-1], lambda = best_lambda)
+##
+
+n2<-nobs(lassomodel2)
+fixedLassoInf(x2, y2, beta = coef(lassomodel2, s=best_lambda2/n2)[-1], lambda = best_lambda2)
+
+n3<-nobs(lassomodel2)
+fixedLassoInf(x2, y2, beta = coef(lassomodel2, s=best_lambda2/n2)[-1], lambda = best_lambda2)
+
+```
+
+Lastly, we will take a look at one more final method for regularization and variable selection in regression: Adaptive Lasso. Adaptive LASSO is an "evolution" of the LASSO (it's not really built on the LASSO though, as the LASSO is itself built on elastic net procedures) that uses a weighted (by coefficient) L1 penalty rather than a simple L1 penalty. Unlike LASSO, Adaptive LASSO appears to have "oracle" properties when the "correct" value of lambda, which means that it has the following properties - it will identify the "correct" subset model (won't include noise variables) and has an optimal estimation rate, which essentially just means that coefficients are estimated as accurately as can be from the given data. **This is extremely exciting, particularly because we estimated our LASSO** **model using the best lambda for prediction, rather than for to have the "correct" model.**
+
+As you'll recall, LASSO and ridge regression introduce bias to counteract high variance, so adaptive LASSO can work around this by weighting penalties on coefficients.
+
+Adaptive LASSO requires a two-step procedure, where coefficient estimates are estimated from a previously estimated model. The original author suggests using the OLS Beta estimates unless collinearity is a concern, in which case we will use ridge regression coefficients, which are more stable in the presence of multicollinearity. We'll do both of course.
+
+To briefly summarize ridge vs. LASSO, ridge regression uses an L2 penalty which simply means that the penalty term squares the vector of Beta values whereas LASSO uses absolute deviation. Furthermore, ridge regression will retain all features in the model, some with very low coefficients whereas LASSO will reduce unimportant features to 0. Lastly, ridge regression will handle multicollinearity and outliers better than LASSO, but LASSO's reduce-coefficient-to-0 capabilities make it extremely attractive for feature selection, particularly in situations where you are not concerned about severe multicollinearity or severe P\>\>N (where ridge is often better).
+
+Let's work out the OLS and ridge coefficients. We'll start with ridge since we've already done LASSO, not to mention some of our predictors actually are relatively correlated (probably not enough that we'd actually want to start with ridge if this were a real analysis, but still).
+
+```{r}
+
+ridge1<- cv.glmnet(x = x2, y = y2,
+                       ## measure to optimize for cross validation
+                       type.measure = "mse",
+                       ## K = 10 is the default.
+                       nfold = 10,
+                       ## ‘alpha = 1’ is the lasso elastic net penalty, and ‘alpha = 0’ the ridge elastic net penalty penalty.
+                       alpha = 0)
+
+
+## Penalty vs CV MSE plot
+plot(ridge1)
+
+##1se and 1min
+ridge1$lambda.min
+ridge1$lambda.1se
+
+#coefficients
+coef(ridge1, s = ridge1$lambda.min)
+coef(ridge1, s = ridge1$lambda.1se)
+## Oops, gotta drop intercept estimate, we don't need that right now.
+best_ridge_coef <- as.numeric(coef(ridge1, s = ridge1$lambda.min))[-1]
+
+best_ridge_coef2 <- as.numeric(coef(ridge1, s = ridge1$lambda.1se))[-1]
+
+##okay guess we'll try adaptive lasso.
+alasso1 <- cv.glmnet(x = x2, y = y2,
+                      
+                        type.measure = "mse",
+                        nfold = 10,
+                        
+                        alpha = 1,
+                        #penalty factors can be different for each coefficient. This number is multiplied by lambda to allow differing levels of shrinkage. Default is 1 for all variables. Also apparently, penalty factors are internally rescaled to sum to the number of variables, so the lambda sequence will reflect this change. As you can see, we are using the inverse of the absolute values of the ridge coefficients. 
+                        penalty.factor = 1 / abs(best_ridge_coef),
+                        ## prevalidated array is returned
+                        keep = TRUE)
+## Penalty vs CV MSE plot
+plot(alasso1)
+
+## Extract coefficients at the two lambda values we like
+alasso1$lambda.min
+alasso1$lambda.1se
+
+alassocoef1 <- coef(alasso1, s = alasso1$lambda.min)
+alassocoef1
+alassocoef2 <- coef(alasso1, s = alasso1$lambda.1se)
+alassocoef2
+
+
+
+
+```
+
+The less stringent lambda produced almost the same model as the regular LASSO, but without GAD. We are probably happy with that - we know GAD hasn't really helped our models in the past. Seems like that adaptive lasso created a somewhat more parsimonious model, but still with some possible noise variables (indicating we did not use the "optimal" level of lambda, which is understandable of course).
+
+Seems that the more stringent lambda value picked a mediocre model - we ran that exact combination of two variables in the random forest paradigm in the other document and it produced a middling model. This could be because we're using ridge regression coefficients, and it may not be the best true fit for our predictors given that our predictors are not extremely correlated.
+
+Let's do OLS now.
+
+```{r}
+
+lm1<-lm(y2~x2) #simple linear model
+summary(lm1) # kind of interesting that SDQ_L keeps popping up as relevant? But as we know, SDQ_L is kind of nonlinear so I bet that is influencing things significantly.
+
+ols_coef <- coef(lm1)[-1]  # Exclude the intercept
+best_ols_coef<-1 / abs(ols_coef) 
+
+#We'll skip cross validation because it would just be bootstrap, which is written about elsewhere.
+
+# Fit lasso w ols weights
+alasso_ols <- cv.glmnet(x2, y2,
+                      type.measure = "mse",
+                        nfold = 10,
+                        alpha = 1,
+                        #penalty factors can be different for each coefficient. This 
+                        penalty.factor = 1 / abs(best_ridge_coef),
+                        ## prevalidated array is returned
+                        keep = TRUE) 
+
+
+
+## Extract coefficients at the two lambda values we like
+alasso_ols$lambda.min
+alasso_ols$lambda.1se
+
+alassocoef3 <- coef(alasso_ols, s = alasso_ols$lambda.min)
+alassocoef3
+alassocoef4 <- coef(alasso_ols, s = alasso_ols$lambda.1se)
+alassocoef4
+
+
+```
+
+The more stringent lambda reported the same coefficients as the ridge adaptive lasso, which means including SDQ_M but not PISA_ME. The model with the less stringent lambda simply included PISA_ME as the third predictor.
+
+**References**
+
+Allaire, J.J., Teague, C., Scheidegger, C., Xie, Y., & Dervieux C. (2024). Quarto version 1.4. https://github.com/quarto-dev/quarto-cli
+
+Brownlee, J. (2017, December 12th). *Project-oriented Workflow*. Tidyverse.org. https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/ .
+
+Bryan, J. (2020, July 30). *Tune machine learning algorithms in R (random forest case study)*. MachineLearningMastery.com.https://www.tidyverse.org/blog/2017/12/workflow-vs-script/
+
+Cipora, K., Lunardon, M., Masson, N., Georges, C., Nuerk, H.-C., & Artemenko, C. (2024). The AMATUS Dataset: Arithmetic Performance, Mathematics Anxiety and Attitudes in Primary School Teachers and University Students. *Journal of Open Psychology Data*, *12*. https://doi.org/10.5334/jopd.115
+
+Chatterjee, T., & Chowdhury, R. (2017). Chapter 11 - Improved Sparse Approximation Models for Stochastic Computations. In *Handbook of Neural Computation* (pp. 201--223). essay, Academic Press.
+
+Friedman J., Tibshirani R., Hastie T. (2010). "Regularization Paths for Generalized Linear Models via Coordinate Descent." *Journal of Statistical Software*, *33*(1), 1--22. [doi:10.18637/jss.v033.i01](https://doi.org/10.18637/jss.v033.i01).
+
+Genuer, R., Poggi, J. M., & Tuleau-Malot, C. (2015). VSURF: An R package for variable selection using random forests. *The R Journal*, *7*(2), 19--33. https://doi.org/10.32614/rj-2015-018
+
+Ilma, H. (2019, December 18). Ridge and LASSO Regression. https://algotech.netlify.app/blog/ridge-lasso/
+
+Kuhn, M. (2008). "Building Predictive Models in R Using the caret Package." *Journal of Statistical Software*, *28*(5), 1--26. [doi:10.18637/jss.v028.i05](https://doi.org/10.18637/jss.v028.i05), <https://www.jstatsoft.org/index.php/jss/article/view/v028i05>.
+
+Nahhas, R.W. (2024). *Introduction to Regression Methods for Public Health Using R.* CRC Press. https://bookdown.org/rwnahhas/RMPH/
+
+Speiser, J. L., Miller, M. E., Tooze, J., & Ip, E. (2019). A Comparison of Random Forest Variable Selection Methods for Classification Prediction Modeling. *Expert systems with applications*, *134*, 93--101. https://doi.org/10.1016/j.eswa.2019.05.028
+
+Tay, J.K. (2021, February 19). *The box-cox and Yeo-Johnson transformations for continuous variables*. Statistical Odds and Ends. https://statisticaloddsandends.wordpress.com/2021/02/19/the-box-cox-and-yeo-johnson-transformations-for-continuous-variables/
+
+Tay J.K, Narasimhan B., Hastie T. (2023). "Elastic Net Regularization Paths for All Generalized Linear Models." *Journal of Statistical Software*, *106*(1), 1--31. [doi:10.18637/jss.v106.i01](https://doi.org/10.18637/jss.v106.i01).
+
+Tibshirani, R.J., Taylor, J., Lockhart, R., & Tibshirani, R. (2016). Exact Post-Selection Inference for Sequential Regression Procedures. *Journal of the American Statistical Association*, *111*(514), 600--620. https://doi.org/10.1080/01621459.2015.1108848
+
+Yoshida, K. (2017). Adaptive Lasso. *Rpubs by RStudio. https://rpubs.com/kaz_yos/alasso*
+
+Zou, H. (2006). The Adaptive Lasso and Its Oracle Properties. *Journal of the American Statistical Association*, *101*(476), 1418--1429. https://doi.org/10.1198/016214506000000735
+
+And a host of Stack Exchange questions as references:
+
+https://stats.stackexchange.com/questions/174976/why-does-the-intercept-column-in-model-matrix-replace-the-first-factor
+
+https://datascience.stackexchange.com/questions/39932/feature-scaling-both-training-and-test-data
+
+https://stats.stackexchange.com/questions/350484/why-is-r-squared-not-a-good-measure-for-regressions-fit-using-lasso
+
+https://stats.stackexchange.com/questions/522265/residual-analysis-for-the-lasso-estimator
+
+https://stats.stackexchange.com/questions/6502/lasso-assumptions
+
+https://stats.stackexchange.com/questions/291409/inference-after-using-lasso-for-variable-selection
+
+https://math.stackexchange.com/questions/2162932/big-picture-behind-how-to-use-kkt-conditions-for-constrained-optimization
+
+https://stats.stackexchange.com/questions/156098/cross-validating-lasso-regression-in-r
+
+https://stats.stackexchange.com/questions/403310/per-cent-increase-in-mse-incmse-random-forests-importance-measure-why-is-mea
+
+https://stackoverflow.com/questions/71900366/randomforest-error-this-function-only-works-for-objects-of-class-rfsrc-grow
+
+https://stats.stackexchange.com/questions/485471/when-in-adaptive-lasso-process-does-it-make-sense-to-constrain-control-variable
+
+https://stats.stackexchange.com/questions/487412/is-this-the-correct-way-to-run-an-adaptive-lasso

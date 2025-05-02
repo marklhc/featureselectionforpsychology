@@ -1,0 +1,371 @@
+---
+title: "Automated RF Variable Selection Methods"
+format: html
+editor: visual
+---
+
+
+
+## Automated Feature Selection Methods: VSURF, Boruta, RFE
+
+As an aside, I will provide several examples of explicit automated methods for variable selection in random forest models. VSURF, the first method I will describe, essentially uses backward stepwise selection followed by forward selection based on variable importance (using a basic definition as we used above being, depending on the task, the difference between MSE/misclassification rate after permuting each predictor). There have been several methods for variable selection described in the literature, however, a recent simulation study demonstrated that VSURF often demonstrates some of the best performance for classification tasks (Speiser et al.), which may extend to regression. However, it is worth noting that VSURF is prediction oriented and as such, accepts the risk of producing false negatives.
+***Importing the Data***
+Below, I will repeat the data import and cleaning code from the original blog post regarding variable selection in Random Forest models. We are again using the AMATUS dataset.
+
+
+```{r}
+#| label: Load packages, clean data
+#| warning: false
+library(here)
+
+library(tidyverse)
+library(caret)
+library(readxl)
+library(readr)
+library(ggplot2)
+library(randomForest)
+
+here::i_am("Dr. Lai Feature Selection Project 9.13.24.rproj")
+#If you'd like to, you can manually set your path with the command above. #I've set it to my rproj file
+#Otherwise, just check with the following
+#command:
+here::here()
+
+# adjust as needed.
+file_path <- normalizePath(here::here("Main Script/OSF archive/AMATUS_dataset.csv"))
+
+
+amatus <- read_csv2(file_path, c("", "NA"), col_names = TRUE) 
+
+View(amatus)
+table(amatus$sum_arith_perf)
+
+amatusclean <- amatus[!is.na(amatus$sum_arith_perf), ] 
+
+amatusclean <- amatusclean[!(amatusclean$sample %in% 
+c("german_teachers", "belgian_teachers")), ] 
+
+amatusclean$sex <- as.factor(amatusclean$sex)
+amatusclean$age_range <- as.factor(amatusclean$age_range)
+amatusclean$breaks <- as.factor(amatusclean$breaks)
+amatusclean$honesty <- as.factor(amatusclean$honesty)
+amatusclean$native_speaker <- as.factor(amatusclean$native_speaker)
+amatusclean$noise <- as.factor(amatusclean$noise)
+
+amatusclean <- amatus[!is.na(amatus$sum_arith_perf), ] 
+amatusclean <- amatusclean[!(amatusclean$sample %in% 
+c("german_teachers", "belgian_teachers")), ] 
+
+
+library(caret)
+set.seed(39) 
+inTrain <- createDataPartition(amatusclean$sum_arith_perf,
+  p = 0.7, list = FALSE
+)
+
+# create training vs test data.
+training <- amatusclean[inTrain, ]
+test <- amatusclean[-inTrain, ]
+View(training)
+View(test)
+
+trainnodv <- training
+preProc <- preProcess(training, method = c("center", "scale"))
+trainscaled <- predict(preProc, training)
+
+numeric_predictors <- c(
+  "score_BFI_N", "score_AMAS_total", "age", "score_GAD",
+  "score_PISA_ME", "score_STAI_state_short",
+  "score_TAI_short", "score_SDQ_L", "score_SDQ_M"
+)
+categorical_variable <- "sex"
+response_variable <- "sum_arith_perf"
+
+
+scaled_training <- training %>%
+  mutate(across(all_of(numeric_predictors), ~ scale(.) %>% as.vector())) %>%
+  select(all_of(numeric_predictors), all_of(categorical_variable), all_of(response_variable)) 
+
+```
+
+
+***First VSURF Run***
+
+
+
+
+```{r}
+#| label: Automated variable selection example
+if (!require(VSURF)) {
+  install.packages("VSURF",
+    repos = "http://cran.us.r-project.org"
+  )
+}
+
+library(VSURF)
+rm(x)
+#we don't really care about only testing a few mtry values at this point 
+#since the best has been mtry=2 every time, so.
+set.seed(46)
+vamatus <- VSURF(sum_arith_perf ~ score_AMAS_total + sex +
+  age + score_BFI_N +
+  score_GAD + score_PISA_ME +
+  score_STAI_state_short + score_TAI_short +
+  score_SDQ_M +
+  score_SDQ_L, data = scaled_training, na.action = na.omit)
+
+View(training)
+
+print(vamatus$varselect.pred) # predictors vsurf selected at final stage.
+```
+
+
+
+VSURF suggests that the best model would contain two variables, `PISA_ME` and `sex`. Keep in mind this is the most powerful predictive model with the fewest variables. Thus, sex may explains a lot more of the variance than a variable like self-concept when self-efficacy is included in the model (and in fact, including all three may again lead to a less parsimonious model, or worse predictions).
+
+Let's work it out in a random forest paradigm for fun. This should hopefully show us the predictive benefit of using such an automated system to create a parsimonious model.
+
+***VSURF Selection Model***
+
+
+
+```{r}
+#| label: Building random forests out of the VSURF-selected variables
+
+control <- trainControl(
+  method = "repeatedcv", number = 10, repeats = 3,
+  search = "grid"
+)
+# the term "grid" means it will picks preselected values for mtry, 
+# which you would define on your own.
+# Remeber to change the control variable back to search = "random" if
+# you aren't using a grid search.
+tunegrid <- expand.grid(.mtry = c(2:3)) 
+set.seed(47)
+rf_strongestvariables <- train(
+  sum_arith_perf ~ sex + score_PISA_ME +
+    score_SDQ_M,
+  data = scaled_training, method = "rf", importance = TRUE,
+  tuneGrid = tunegrid, trControl = control
+)
+print(rf_strongestvariables)
+varImpPlot(rf_strongestvariables$finalModel, type = 1)
+# type 1 refers to estimates following perturbation.
+
+
+
+tunegrid <- expand.grid(.mtry = c(2:2)) 
+set.seed(48)
+rf_strongestvariables2 <- train(sum_arith_perf ~ sex + score_SDQ_M,
+  data = scaled_training, method = "rf", importance = TRUE,
+  tuneGrid = tunegrid, trControl = control
+)
+print(rf_strongestvariables2)
+
+varImpPlot(rf_strongestvariables2$finalModel, type = 1)
+# type 1 refers to estimates following perturbation.
+
+
+set.seed(49)
+rf_strongestvariables3 <- train(sum_arith_perf ~ score_PISA_ME + score_SDQ_M,
+  data = scaled_training, method = "rf", importance = TRUE,
+  tuneGrid = tunegrid, trControl = control
+)
+print(rf_strongestvariables3)
+
+varImpPlot(rf_strongestvariables3$finalModel, type = 1)
+# type 1 refers to estimates following perturbation.
+
+
+# this will be the VSURF selected model.
+set.seed(50)
+rf_strongestvariables4 <- train(sum_arith_perf ~ score_PISA_ME + sex,
+  data =
+    scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid,
+  trControl = control
+)
+print(rf_strongestvariables4)
+
+varImpPlot(rf_strongestvariables4$finalModel, type = 1)
+# type 1 refers to estimates following perturbation.
+
+```
+
+
+
+As you can see, the model with sex and self-efficacy has by far the lowest `MSE` and the best R-squared (though the model with `sex` and `SDQ_M` seemed to do fine, probably because `PISA_ME` and `SDQ_M` cover a lot of the same ground). Its r-squared is comparable to models with many more variables, and its `MSE` isn't too bad either. It's safe to say that this is definitely the most parsimonious model in the sense that it explains a ton of the variance with only two variables. Adding a couple more variables should likely increase raw predictive power, but if you're looking to identify the model with the absolute best predictive power in the fewest variables, you likely need to look no further.
+
+## Boruta
+
+Boruta is a package in R that conducts feature selection using its own algorithm. In a nutshell, Boruta iteratively cuts features that appear to provide less importance to the model than random probes. It uses a similar permutation-based method, however, to determine prediction error increase when a variable's values are permuted.
+
+
+
+```{r}
+# Load necessary libraries
+library(Boruta)
+library(randomForest)
+
+
+# Set the seed for reproducibility
+set.seed(123)
+boruta_output <- Boruta(
+  sum_arith_perf ~ score_AMAS_total + sex + age + score_BFI_N +
+    score_GAD + score_PISA_ME + score_STAI_state_short + score_TAI_short +
+    score_SDQ_M + score_SDQ_L,
+  data = scaled_training, doTrace = 2,  # to set up the cross validation
+  maxRuns=150, #max number of times it tries to run the importance.
+  ) 
+ # 2 specifies most detail.
+
+# Print the results
+print(boruta_output)
+# View final decision on variable importance
+print(boruta_output$finalDecision)
+
+# Plotting the importance
+plot(boruta_output, las = 2, cex.axis = 0.7)
+
+```
+
+
+
+As you can see, Boruta reports pretty much what we expected with regards to unimportant and important variables. Boruta reports `SDQ_L`, `BFI_N`, and `TAI_short` as the least important variables, which aligns with our pseudo-feature selection process we underwent earlier. Even more interestingly, we had originally determined that sex, math self-efficacy, math self-concept, and at least one of the anxiety variables (except test anxiety) seemed to be crucial to predicting arithmetic performance. We can see that that lines up with Boruta's output: the three important variables are above all others while `AMAS_total` and test anxiety are also confirmed, though AMAS seems to be a bit more powerful. Thus, our backwards selection procedure did seem to be good for intuitively identifying the most important variables. However, as mentioned earlier, backwards selection is dangerous for individual variable interpretation, and automated methods are almost always more statistically valid.
+
+Alright just for fun: one more Boruta run after removing the three "worst" variables.
+
+***Second Boruta Run***
+
+
+
+```{r}
+# Load necessary libraries
+library(Boruta)
+library(randomForest)
+
+
+# Set the seed for reproducibility
+set.seed(123)
+boruta_output2 <- Boruta(
+  sum_arith_perf ~ score_AMAS_total + sex + age +
+    score_GAD + score_PISA_ME + score_STAI_state_short +
+    score_SDQ_M,
+  data = scaled_training, doTrace = 2, #2 specifies most detail.
+  #default maxRun is 100, btw
+  ) 
+
+# Print the results
+print(boruta_output2)
+
+# View final decision on variable importance
+print(boruta_output2$finalDecision)
+
+# Plotting the importance
+plot(boruta_output2, las = 2, cex.axis = 0.7)
+```
+
+
+
+One more piece of the puzzle --- Boruta does indeed seem to find that age is tentatively a useful predictor. This somewhat aligns with our earlier findings that age continued to pop up in our recursively smaller models, but eventually became the least important predictor. It probably isn't included in the best prediction models or even the "true subset of variables" models, but still nice to know
+
+## RFE for Prediction
+
+Lastly, I'm going to provide code for a recursive feature selection (RFE) process through the caret package. RFE is really just backwards selection, so it is quite simple. It starts by fitting a model to all predictors.
+
+
+
+```{r}
+#| label: RFE for Prediction
+#| warning: false
+# Load necessary libraries
+library(caret)
+
+# Define control for RFE
+control <- rfeControl(
+  method = "repeatedcv", # Use repeated cross-validation
+  number = 10, # Number of folds
+  repeats = 3, # Number of repetitions
+  returnResamp = "final" # Return the final results
+)
+
+# Set seed for reproducibility
+set.seed(123)
+# Run RFE
+rfe_output <- rfe(
+  x = scaled_training[, c(
+    "score_AMAS_total", "sex", "age", "score_BFI_N",
+    "score_GAD", "score_PISA_ME", "score_STAI_state_short",
+    "score_TAI_short", "score_SDQ_M", "score_SDQ_L"
+  )],
+  y = scaled_training$sum_arith_perf,
+  sizes = c(1:10), # Specify the number of predictors to evaluate
+  rfeControl = control,
+  method = "rf" # Use random forest as the model
+)
+
+# Print results
+print(rfe_output)
+
+# Looks like the best model was with all 10 variables.
+rfe_output$fit
+
+rfe_output$optVariables
+
+# mean importance by variable
+# Extract the variable importance information from the RFE object
+rfe_output$variables # this is importance across all subsets
+caret::varImp(rfe_output) # this is importance in final model
+```
+
+
+
+Spoilers --- the best predictive performance seems to be with all ten variables, like we sort of anticipated. It seems that due to low effect sizes for most variables and the fact that some variables, like certain anxiety variables or age, may not have a strong correlation with the DV (or even that much importance in random forest models), but they seem to be very useful for prediction, hopefully not by overfitting on the random noise and creating false patterns, but by hopefully acting as suppressors that improve the performance of other variables in the set (which we will again test using test data).
+
+***Prediction Evaluation***
+
+
+```{r}
+### 2/3 variable models
+predictionsstrongest1 <- predict(rf_strongestvariables, test)
+validationstrongest1 <- data.frame(
+  R2 = R2(predictionsstrongest1, test$ sum_arith_perf),
+  RMSE = RMSE(predictionsstrongest1, test$ sum_arith_perf),
+  MAE = MAE(predictionsstrongest1, test$ sum_arith_perf)
+)
+print(validationstrongest1)
+
+predictionsstrongest2 <- predict(rf_strongestvariables2, test)
+validationstrongest2 <- data.frame(
+  R2 = R2(predictionsstrongest2, test$ sum_arith_perf),
+  RMSE = RMSE(predictionsstrongest2, test$ sum_arith_perf),
+  MAE = MAE(predictionsstrongest2, test$ sum_arith_perf)
+)
+print(validationstrongest2)
+
+
+predictionsstrongest3 <- predict(rf_strongestvariables3, test)
+validationstrongest3 <- data.frame(
+  R2 = R2(predictionsstrongest2, test$ sum_arith_perf),
+  RMSE = RMSE(predictionsstrongest2, test$ sum_arith_perf),
+  MAE = MAE(predictionsstrongest2, test$ sum_arith_perf)
+)
+print(validationstrongest3)
+
+
+
+predictionstwovariablemodel <- predict(rf_strongestvariables4, test)
+validationtwovariablemodel <- data.frame(
+  R2 = R2(predictionstwovariablemodel, test$ sum_arith_perf),
+  RMSE = RMSE(predictionstwovariablemodel, test$ sum_arith_perf),
+  MAE = MAE(predictionstwovariablemodel, test$ sum_arith_perf)
+)
+print(validationtwovariablemodel)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionstwovariablemodel - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+
+```
+

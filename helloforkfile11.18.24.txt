@@ -1,0 +1,760 @@
+---
+title: "Techniques for Variable Selection for Psychologists - Random Forest and LASSO "
+format:
+  html: default
+  gfm: default
+knitr:
+  opts_chunk: 
+    collapse: true
+    R.options:
+      knitr.graphics.auto_pdf: true
+---
+
+## Random Forest for Regression for Psychologists in R - An Example
+
+In this document, I will walk through a random forest variable selection procedure for a psychological dataset. The dataset is extremely characteristic of many psychology datasets---it has an okay but not at all large sample size (735 N before being split into test/training sets), a relatively high number of potential predictors (20+ collected as part of the survey, many of which are likely completely unhelpful in prediction), and what are likely middling effect sizes for predictors. The focus of the model will be regression, and we will be primarily discussing model error and predictive power, though you'll see it's not our only concern. We'll review a few different ways of creating models, selecting features, and evaluating models.
+
+However, be aware that this is not a tutorial on identifying the absolute best predictive model, which is described ad infinitum elsewhere. I will touch on using algorithmic methods to identify the "optimal" subset of predictors in a full model, but the recursive/backwards selection-style procedure I walk through in this walkthrough is primarily intended to be.
+
+One more note: the best feature selection method will always be expert knowledge on which variables are likely to explain the majority of the variance/signal as well as which less-important variables are likely to provide valuable interactions.
+
+I have not seen the data ahead of time. The analyses described hereafter are entirely novel.
+
+## The Data
+
+<!-- HL: suggest to use --- for em dashes -->
+
+Importantly, we are conducting a regression task, not a classification task, as our dependent variable is continuous. The main task we'll be attempting to address is the following---we would like to predict arithmetic performance score in German students from a set of predictor variables including age, sex, self-reported math anxiety, self-reported math self-concept, and others. Our second main task is that we would like to identify which of these variables are actually useful in predicting arithmetic performance and which ones are not, so future researchers do not have to waste resources collecting unimportant variables for minimal improvement in prediction. In other words, we would like a concise model. This data was originally gathered and shared by Cipora et al. (2024). <!-- HL: can use citation syntax in quarto: https://quarto.org/docs/authoring/citations.html -->
+
+Since the dataset contains over 40 potential predictor variables and only around <!-- HL: this part is unclear --> 735 N pre-training/test split, I have selected ten variables from the dataset at pseudo-random for our analysis. For the purposes of this document, only these ten variables "exist". Below, I will list the ten variables we are interested in studying as predictors of arithmetic performance score followed by the syntax for their object in R. All assessments were in German.
+
+***Dependent Variable:***\
+Arithmetic performance/`sum_arith_perf` <!-- HL: use `` for variable names -->, as measured by "the number of correctly solved problems in order as instructed" on a simple arithmetic speed test.
+
+***Predictors:***\
+Age/`age`, as measured in years.
+
+Sex/`sex`, where 1 = male, 2 = female, and 3=other. Participants who ignored this question were removed.
+
+Neuroticism/`score_BFI_N`, as measured by the sum score of the 8 items of the Big Five Inventory (short version) pertaining to neuroticism.
+
+Math anxiety/`score_AMAS_total`, as measured by the sum score on the Abbreviated Math Anxiety Scale.
+
+General trait anxiety/`score_GAD`, as measured by sum score on the Generalized Anxiety Disorder Screener (GAD-7).
+
+Math self-efficacy/`score_PISA_ME`, as measured in the PISA 2012 study using the sum score of six items.
+
+General state anxiety/`score_STAI_state_short`, as assessed by the sum of the five-item scale STAI-SKD.
+
+Test anxiety/`score_TAI_short`, as measured by the sum score of the 5 items on the short version of the Test Anxiety Inventory.
+
+Math self-concept/`score_SDQ_M`, as measured by the sum score of the four math-related statements on the Self-Description Questionnaire III. Evaluates variables such as one's comfort/enjoyment/pride with math, whereas self-efficacy evaluates one's self-confidence in math abilities.
+
+Language self-concept/`score_SDQ_L`, as measured by the sum score of the four language-related statements on the Self-Description Questionnaire III.
+
+## <!-- HL: Add more subheads -->
+
+We'll start with importing and cleaning the data to make sure it fits our task.
+
+<!-- HL: the `stats` package is built-in and doesn't need to be loaded. `tidyverse` loads some other packages too. -->
+
+```{r}
+#| label: Load packages, clean data
+#| warning: false
+library(here)
+# set_here("/Users/frankie/Desktop/Dr. Lai Feature Selection Project 9.13.24/Main Script") #using this to demonstrate how you can set it to what you want
+library(tidyverse)
+library(caret)
+library(readxl)
+library(randomForest)
+```
+
+So "here" is apparently `r print(here())` for me. "Here" on your computer will be whatever the top level folder of the current project folder is. You can set it using the `set_here()` function, but I recommend sticking your work in one folder with subfolders.You don't even need to worry about working directories if you use the here function. Yay!
+
+Below, we'll again use the here function to tell the readr function where to go to get the dataset. Our data was stored in the Main Script folder, in a subfolder called OSF archive, and named "AMATUS_dataset.csv." Use that info to read the code below. Notice how we use a `normalizePath()` <!-- HL: we generally use `fun()` to denote R function --> function to convert relative or incomplete path names to absolute path names. That way, we don't have to worry too much about people using
+
+<!-- HL: Since you'll be using the `amatusclean` dataset, would it make sense to do as.factor() on the cleaned data set? -->
+
+```{r}
+# HL: You can use the link directly
+file_path <- normalizePath(here::here("OSF archive/AMATUS_dataset.csv"))
+# file_path <- url("https://osf.io/download/wzrqb/")
+
+amatus <- read_csv2(file_path, c("", "NA"), col_names = TRUE) # it's already in the "working directory" of the main script folder, so we only need the subfolder OSF archive and the actual name of the dataset.
+
+View(amatus)
+# We can use this command to view our data.
+table(amatus$sum_arith_perf)
+
+
+#### Just some regular old data cleaning to start with.
+# HL: Alternative code
+amatus <- amatus |>
+    mutate(across(c("sex", "age_range", "breaks", "honesty", "native_speaker", "noise"),
+           .fns = as_factor))
+# amatus$sex <- as.factor(amatus$sex)
+# amatus$age_range <- as.factor(amatus$age_range)
+# amatus$breaks <- as.factor(amatus$breaks)
+# amatus$honesty <- as.factor(amatus$honesty)
+# amatus$native_speaker <- as.factor(amatus$native_speaker)
+# amatus$noise <- as.factor(amatus$noise)
+
+amatusclean <- amatus[!is.na(amatus$sum_arith_perf), ] # removing the individuals who did not complete the performance test in order as instructed
+amatusclean <- amatusclean[!(amatusclean$sample %in% c("german_teachers", "belgian_teachers")), ] # removing the other two samples from the dataset
+View(amatusclean)
+```
+
+Now, we'll just check out a quick histogram of the dependent variable, arithmetic math performance.
+
+<!-- HL: I think a histogram is more appropriate given the outcome is somewhat discrete. Also, should we use amatusclean? -->
+
+<!-- HL: Consider adding a caption to the figures. I give an example below. -->
+
+```{r}
+#| label: fig-arith-perf
+#| fig-cap: "Distribution of outcome variable: Arithmetic Math Performance"
+#| warning: false
+#| echo: false
+
+ggplot(
+  amatus,
+  aes(x = sum_arith_perf)
+) +
+  geom_density(fill = "lightblue", alpha = 0.7) +
+  # HL: you can use theme_set(theme_minimal()) in the beginning to set the style for all graphs.
+  theme_minimal()
+```
+
+As you might expect from test scores, our data is clearly skewed right. There's no missing data for our Y variable of performance since we are not interested in participants who answered out of order against instructions. Let's also look at some predictors.
+
+```{r}
+#| label: A Couple of Predictor Histograms
+#| echo: false
+
+ggplot(
+  amatus,
+  aes(x = score_AMAS_total)
+) +
+  geom_density(fill = "lightblue", alpha = 0.7) +
+  theme_minimal()
+
+ggplot(
+  amatus,
+  aes(x = score_BFI_N)
+) +
+  geom_density(fill = "lightblue", alpha = 0.7) +
+  theme_minimal()
+```
+
+One predictor's distribution is very normal, the other isn't. I'll save you the trouble and tell you that the rest of the features are a grab bag too. Normally we wouldn't care too much about standardization given that this is a tree-based model. However, because we are interested in variable importance metrics (since we are focusing on feature selection), we actually do need to scale our features. This is because variable importance metrics are skewed towards predictors that have a wider range of values. So a continuous variable may return a more biased estimate in the variable importance metric than a variable that can take 3 or 4 values. So we have to scale our variables to avoid biased estimates of their importance.
+
+The way we'll do it is use the `scale()` function within the model specification argument in each function. This will center and scale our continuous predictors. For our categorical variables, we'll simply not put that function before the predictor.
+
+We'll go ahead and get started by creating our first random forest model. Let's try using the `caret` package, a relatively general machine learning package.
+
+A side note: There are several different validation methods you can use in caret, including bootstrapping, cross-validation, and repeated cross-validation. Repeated cross-validation should always be used when computationally appropriate. Bootstrapping may be compelling here due to the small dataset, but repeated cross-validation is just as good as bootstrap in smaller samples and should do the job for us.
+
+<!-- HL: I'm missing `mtry` in the following code as it doesn't run -->
+
+```{r}
+#| label: First model setup
+#|
+
+library(caret)
+set.seed(39) # I'm going to put this before every random generation just for clarity. Probably should've put it before the data partition.
+inTrain <- createDataPartition(amatusclean$sum_arith_perf, p = 0.7, list = FALSE) # 0.7 selected to have a decent number of N in the test set
+
+# create training vs test data.
+training <- amatusclean[inTrain, ]
+test <- amatusclean[-inTrain, ]
+View(training)
+View(test)
+
+
+##### There are two methods to include scaling of predictor variables: manual scaling of predictors (and predictions later on), and preprocessing, which means using an R function to "process" your data to put it in the model. I will show an example with preProcess from the caret package, however the "recipes" package may be even more powerful for preprocessing and less inconvenient, since preProcess is usually used for scaling all variables in a dataset at once (and therefore is harder to use with subsequent models, since you need to tune the application of your preprocessing.)
+#####
+# I'm going to pull out the dependent variable.
+trainnodv <- training
+preProc <- preProcess(training, method = c("center", "scale"))
+trainscaled <- predict(preProc, training)
+# Again, we will not be using this, but training data is standardized in trainscaled.
+# Let's try doing it in a general way.
+numeric_predictors <- c(
+  "score_BFI_N", "score_AMAS_total", "age", "score_GAD",
+  "score_PISA_ME", "score_STAI_state_short",
+  "score_TAI_short", "score_SDQ_L", "score_SDQ_M"
+)
+categorical_variable <- "sex"
+response_variable <- "sum_arith_perf"
+
+# Create a new dataframe by scaling and centering numeric predictors
+scaled_training <- training %>%
+  mutate(across(all_of(numeric_predictors), ~ scale(.) %>% as.vector())) %>% # Scale and convert back to vector
+  select(all_of(numeric_predictors), all_of(categorical_variable), all_of(response_variable)) # Select only the relevant columns
+
+# View the scaled data
+View(scaled_training)
+
+
+
+# doing this to find out what "mtry" is the "best"!
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3, search = "grid") # this one picks preselected values for mtry, which you would define on your own.
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3, search = "random") # picks random mtries in the range when tunegrid is in constant.
+tunegrid <- expand.grid(.mtry = mtry) # This creates a data frame from all combinations of the supplied vectors/factors. many. In other words, this creates the grid of values for the hyperparameter mtry. This  sets up the grid of different values for mtry. We currently have it set to 10 values, with the smallest being 2.
+
+# We're going to stick with a grid search so our models can try and choose the "best" mtry between 2-10, since our optimal mtry seems to be incredibly low anyways. That also means we won't include the tunegrid argument above. Use that if you want to search a grid of mtries. Example in this code chunk below.
+
+
+
+# mtry is a parameter of the number of randomly selected predictors to consider splitting at each node of the decision tree. More on this after the code.
+
+mtry <- ncol(x) / 3 # in random forest for regression, predictors/3 is often the "default" value of this parameter. In classification, it is the square root of the number of predictors.
+mtry <- 2 # let's also have this constant value available here for now. Remember to run the proper mtry object creation line before running a model.
+
+# let's start with the default value for mtry and a random search in tunegrid.
+x <- amatusclean[, 1:10]
+mtry <- ncol(x) / 3
+
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 4, search = "random")
+set.seed(40) # if you want to set seed for replicability, put this before every random thing
+rf_scaled <- train(sum_arith_perf ~ scale(score_AMAS_total) + sex + scale(age) + scale(score_BFI_N) + scale(score_GAD) + scale(score_PISA_ME) + scale(score_STAI_state_short) + scale(score_TAI_short) + scale(score_SDQ_M) + scale(score_SDQ_L), data = training, importance = TRUE, method = "rf", tuneLength = 10, trControl = control)
+print(rf_scaled)
+varImpPlot(rf_scaled$finalModel, type = 1)
+```
+
+As you can see in the first model (rf_scaled), If it was up to caret, the best predictive method would have us randomly sample 1 predictor to consider splitting at each node of the decision tree. That means we probably have very few predictors that actually provide value in predicting math performance. This is expected in this dataset and in much psychological research, as we stated early on. Although an mtry=1 is too random, we clearly need to use a low mtry. The difference between the default (# of predictors/3) number for mtry and mtry=2 isn't too big, so we can stick with either for now. We'll try to set 2 as the minimum and make sure our code test a range of mtries, just in case another value ends up being better than 2 (which I don't expect to be the case).
+
+Let's exclude 1 and go again and try more options.
+
+```{r}
+#| label: Excluding mtry=1
+mtry <- 2
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3, search = "grid") # the term "grid" means it will picks preselected values for mtry, which you would define on your own.
+# remember to change the control variable back to search = "random" if you aren't using a grid search.
+
+tunegrid <- expand.grid(.mtry = c(2:8)) # This one says try between 2-10. You can't try more mtries than there are predictors. We're going to stick with this throughout. Since our optimal mtry at first was 1, the optimal mtry is probably going to be low (and will likely be 2)
+
+set.seed(40) # I'm going to put this before every random generation just for clarity.
+rf_mtry2 <- train(sum_arith_perf ~ score_AMAS_total + sex + age + score_BFI_N + score_GAD + score_PISA_ME + score_STAI_state_short + score_TAI_short + score_SDQ_M + score_SDQ_L, data = scaled_training, importance = TRUE, method = "rf", tuneGrid = tunegrid, trControl = control) ## Notice we keep using the importance=TRUE parameter, which calculates variable importance metrics. We need this to be set to TRUE to be able to see varimp plots later.
+
+print(rf_mtry2)
+varImpPlot(rf_mtry2$finalModel, type = 1)
+
+# R2: 0.1466
+# MSE: 6.331
+```
+
+R squared of around .14ish is obviously pretty low, but it's actually decent for psychological research. In published papers, you'll often happen to see r-squareds around .15-.25 or so, if that. It's very hard to build an extremely accurate model of human behavior namely because an incalculable number of factors influence our behavior in seen and unseen ways. Not to mention we care more about feature selection for than perfect prediction, which is why we are scaling variables in the first place. If we just wanted the best predictive model,
+
+The VarImpplot function assesses the variable importance for each of the variables in our model, measured by the increase in Mean square error should the variable be removed from the model. As you can see, the lowest variable is extremely irrelevant to the model, that variable being test anxiety. Test anxiety may be a bad predictor of arithmetic performance, or more likely, it is not doing anything the state, math or general anxiety variables aren't doing already. Our models also seem to agree that language self-concept is also pretty useless, which makes sense conceptually.
+
+It also looks like the models we run think that math self-concept, sex and math self-efficacy are the most important variables. Just looking at the graphs, there does indeed seem to be around 2-5ish variables here that actually predict a significant amount of variance in our DV, so that's probably a great number for a parsimonious model.
+
+Now, to fit our goal of parsimony, we want to cut out the variables that don't help us very much because we run the risk of creating a very nonparsimonious model, and of overfitting of course. For example, age seems to be mildly important, but is it important enough that we need it in our model to have accurate estimates? Well, from the model above, it kind of seems that there's only one, maybe two predictors that are extremely irrelevant to the model. This is probably in part because the effect sizes of most variables are so weak that removing any one variable can significantly reduce the predictive power of the model. In other words, the best predictive model might be a 9 or 10 variable model, but the best parsimonious model (which contains only the most relevant predictors at the cost of retaining all variables with even minor predictive power) may be somewhere in the 2-5 variable range.
+
+So, we will start cutting down and see what these models look like. But first, a caveat - we will be engaging in what many in the machine learning field would call "recursive feature selection", and what many statisticians would call "stepwise selection", "backwards selection" to be specific. Let me just be clear - backwards selection is never the best way to do variable selection. You should try to use automated methods with clear "reward" and "loss" functions so you better understand why it has penalized what it penalized and why it has selected what it selected. Backwards selection has the nasty little habit of occasionally overemphasizing variables that actually have little relationship with the DV because they happen to "fit in" nicely with the other variables, making the variable appear important in the specific models backwards selection evaluates, but the variable may be unimportant in the "true" best model for prediction (or the model containing the "true" subset of actually important variables, if you believe in that). We are going through it because it is common but more importantly because it does help you better understand the relationships between variables in the specific model, and it is easy to run an automated method without really thinking about what it is showing you. An example of one potential automated method is provided before the end of this document, however. Such methods are often relatively simple to run thanks to great programmers.
+
+I want to start by saying that We'll start with a 9 variable model, which we'll create FIRST by cutting test anxiety.
+
+```{r}
+#| warning: false
+#| label: First selection, cutting test anxiety
+
+rm(mtry)
+set.seed(41) # I'm going to put this before every random generation just for clarity.
+rf_firstselection <- train(sum_arith_perf ~ score_AMAS_total + sex + age + score_BFI_N + score_GAD + score_PISA_ME + score_STAI_state_short + score_SDQ_M + score_SDQ_L, data = scaled_training, method = "rf", importance = TRUE, tuneLength = 10, tuneGrid = tunegrid, trControl = control)
+print(rf_firstselection)
+# we'll look at variable importance again in a minute
+# R2: 0.14
+# MSE: 6.355
+```
+
+```{r}
+varImpPlot(rf_firstselection$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+```
+
+We're seeing a similar pattern. Math self-confidence and sex seem to be two of the most powerful variables in every model, while math self-efficacy and math anxiety trail not too far behind (the rest seems to hang in the balance). It seems like of the ten we chose, those are some of the most important variables needed to predict math performance in German students. RMSE and R squared dropped, but these numbers fluctuate given the nature of random forest models. We'll take a look at how these models predict the test set later.
+
+Notice that the %incMSE of the lowest variable is not close to 1 or 2, as test anxiety was. It's higher. Our model may be slightly more parsimonious. However, it may not be as good as predicting as the complete model.
+
+Now, we're going to try to run more random forest models, this time with a reduced set of predictors since we are at least starting to identify the most important predictors. Let's see if we can find a more parsimonious model with still good predictive power.
+
+Since AMAS measures math anxiety, which conceptually seems to map on to math performance better than general anxiety, it makes sense that state anxiety and general anxiety are also relatively unimportant predictors. General anxiety doesn't seem to add much value to predicting math performance when math anxiety is already accounted for, and state anxiety isn't much better. Test anxiety (from earlier) being a weak predictor is not as intuitive, but it's possible that the most salient aspect here is that the test is on math, not that there's a test itself, so anxiety of tests in general doesn't really have predictive power of performance the same way math anxiety does.
+
+Either way, we should start by cutting language self-efficacy. It's clearly just not a very good predictor.
+
+```{r}
+#| warning: false
+#| label: Second selection
+
+set.seed(42) # I'm going to put this before every random generation just for clarity.
+rf_secondselection <- train(sum_arith_perf ~ score_AMAS_total + sex + age + score_BFI_N + score_STAI_state_short + score_PISA_ME + score_SDQ_M + score_GAD, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_secondselection)
+
+# R2: 0.1416
+# MSE: 6.325
+```
+
+```{r}
+varImpPlot(rf_secondselection$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+```
+
+Slight reduction in RMSE and increase in (training data) R-squared! Importantly, the variable importance metrics look pretty decent - the lowest incMSE% is around 5%. great news for our goal of parsimonious modeling. However, I'm not sure if this will continue. It's okay if while going through variable selection, your model doesn't necessarily have a massive reduction in RMSE or massive increase in r squared. Remember that we're looking to explain the most variance with as few variables (parsimony), so sometimes parsimony is worth slight decreases in predictive accuracy (though you should make sure you're not cutting a seemingly low-predictive power variable that nonetheless has explanatory importance).
+
+This may be a pretty good model. The fact that the \$incMSE is approaching reasonable numbers like 6 instead of 1 or 2 means we're starting to run out of questionable predictors. This model is likely better than the full model, but possibly not the best model of sheer prediction. However, we may not need all those measures of anxiety, and like we said earlier, we likely are looking for a 2-5 variable model (on the lower end, I'd expect) to cover almost all of the variance. So we should keep going before we start prediction.
+
+Let's cut the next least important variable - BFI_N.
+
+```{r}
+#| warning: false
+#| label: Third selection
+set.seed(43) # I'm going to put this before every random generation just for clarity.
+rf_thirdselection <- train(sum_arith_perf ~ score_AMAS_total + sex + age + score_STAI_state_short + score_PISA_ME + score_GAD + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_thirdselection)
+
+# we'll look at variable importance again later.
+# R2: 0.1224
+# MSE: 6.415
+```
+
+No improvements in R squared seems odd...until we take a look at the VarImp output.
+
+```{r}
+varImpPlot(rf_thirdselection$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+```
+
+Jeez, the RMSE went up pretty badly. Clearly this isn't better than the previous model. Let's keep going.
+
+```{r}
+#| warning: false
+#|
+set.seed(44)
+rf_fourthselection <- train(sum_arith_perf ~ score_AMAS_total + sex + age + score_STAI_state_short + score_PISA_ME + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_fourthselection)
+# we'll look at variable importance again later.
+# R2: 0.1301
+# MSE: 6.38
+```
+
+```{r}
+varImpPlot(rf_fourthselection$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+```
+
+See how the RMSE went a little back down again? To be expected. Our hunch earlier was correct - looks like the anxiety variables aren't really helping us all that much. I suspect the MOST parsimonious model won't have these either. Let's cut the last one then.
+
+```{r}
+#| warning: false
+#|
+set.seed(45)
+rf_fifthselection <- train(sum_arith_perf ~ sex + age + score_AMAS_total + score_PISA_ME + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_fifthselection)
+# R2: 0.1576
+# MSE: 6.27
+```
+
+```{r}
+varImpPlot(rf_fifthselection$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+```
+
+Woah, this model looks way better. RMSE is way down and R squared is up. In fact, this seems like it may even be better than our 8-variable model. We'll keep this in mind as we cut neuroticism, which again seems to be an extremely irrelevant predictor. However, keeping neuroticism may be useful for predictive power of our parsimonious model. Also, if you haven't noticed, age used to be one of the predictors with the lowest incMSE% in the full model, but has stuck in the models we are testing. Age is probably a good parsimonious predictors (i.e. it can explain a lot of variance in relatively sparse models), but it may be suppressed or obscured by highly collinear predictors in the full model. If this were an actual research project, I would have conducted exploratory data analysis to check age's correlation with other variables as well as evaluated the part correlation in the full model to see if age was being suppressed.
+
+```{r}
+#| warning: false
+#|
+set.seed(46)
+rf_sixthselection <- train(sum_arith_perf ~ sex + score_PISA_ME + score_SDQ_M + age, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_sixthselection)
+
+# R2: 0.1422
+# MSE: 6.39
+```
+
+```{r}
+varImpPlot(rf_sixthselection$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+```
+
+The MSE went up again, and by a decent amount. At this point, it seems safe to say that the four variables above are the most "important" variables in terms of building a parsimonious model, and math self-efficacy and sex are likely the top two. Given the better metrics of the fifth selection model, neuroticism also seems to be a pretty good predictor in a parsimonious model, and we likely don't want to cut it. However, you may only want to identify the "most important variables", and though neuroticism may be a good predictor in a 5 variable model, it may not be the "most important variable". The 4 or 5 variable models seem to be pretty good parsimonious models if we want to collect more than only 2 variables. In other words, we've identified 5 variables that can produce a good model that captures a good amount of the variability in scores. This model may be the best combination of parsimony and predictive power (in fact, it seems like it may be flat out the best predictive model), but this model is likely not the most parsimonious (that seems to be a model with only a couple predictors, as we've indicated before). There is also a chance it is not the most predictive (which we'll test soon).
+
+Instead of just continuing the same process and cutting the last few variables, I will provide an example of an explicit method for variable selection in random forest models that will return the same output. VSURF, the method in question, essentially uses backward stepwise selection followed by forward selection based on variable importance (using a basic definition as we used above being, depending on the task, the difference between MSE/misclassification rate after permuting each predictor). There have been several methods for variable selection described in the literature, however, a recent simulation study demonstrated that VSURF often demonstrates some of the best performance for classification tasks (Speiser et al.), which may extend to regression. However, it is worth noting that VSURF is prediction oriented and as such, accepts the risk of producing false negatives.
+
+```{r}
+if (!require(VSURF)) install.packages("VSURF", repos = "http://cran.us.r-project.org")
+
+library(VSURF)
+rm(x)
+set.seed(46)
+vamatus <- VSURF(sum_arith_perf ~ scale(training$score_AMAS_total) + sex + scale(training$age) + scale(training$score_BFI_N) + scale(training$score_GAD) + scale(training$score_PISA_ME) + scale(training$score_STAI_state_short) + scale(training$score_TAI_short) + scale(training$score_SDQ_M) + scale(training$score_SDQ_L), data = training, na.action = na.omit)
+
+View(training)
+
+
+View(vamatus)
+
+vamatus$terms
+vamatus$varselect.pred # predictors vsurf selected at final stage.
+```
+
+VSURF suggests that the best model would contain two variables, PISA_ME and sex. Keep in mind this is the most powerful predictive model with the fewest variables. Thus, sex may explains a lot more of the variance than a variable like self-concept when self-efficacy is included in the model (and in fact, including all three may again lead to a less parsimonious model, or worse predictions).
+
+Let's test it out.
+
+```{r}
+#| warning: false
+#|
+set.seed(47)
+rf_strongestvariables <- train(sum_arith_perf ~ sex + score_PISA_ME + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_strongestvariables)
+varImpPlot(rf_strongestvariables$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.1022
+# MSE: 6.532
+
+
+
+
+set.seed(48)
+rf_strongestvariables2 <- train(sum_arith_perf ~ sex + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_strongestvariables2)
+plot(rf_strongestvariables2)
+varImpPlot(rf_strongestvariables2$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.117
+# MSE: 6.37
+
+
+
+
+set.seed(49)
+rf_strongestvariables3 <- train(sum_arith_perf ~ score_PISA_ME + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_strongestvariables3)
+plot(rf_strongestvariables3)
+varImpPlot(rf_strongestvariables3$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.062
+# MSE: 6.81
+
+
+
+# this will be the VSURF selected model.
+set.seed(50)
+rf_strongestvariables4 <- train(sum_arith_perf ~ score_PISA_ME + sex, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_strongestvariables4)
+plot(rf_strongestvariables4)
+varImpPlot(rf_strongestvariables4$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.127
+# MSE: 6.32
+```
+
+As you can see, the model with sex and self-efficacy has by far the lowest MSE and the best R-squared. Its r-squared is comparable to models with many more variables, and its MSE isn't too bad either. It's safe to say that this is definitely the most parsimonious model in the sense that it explains a ton of the variance with only two variables. Adding a couple more variables should likely increase raw predictive power, but if you're looking to identify the model with the absolute best predictive power in the fewest variables, look no further.
+
+Prediction time. Let's see what we get.
+
+```{r}
+#| label: Prediction
+#### TESTING ACCURACY OF MODEL ON TEST SET!
+# First, we'll make sure we have a spare test set in case anything goes horribly wrong.
+
+View(training)
+View(test)
+# We'll also save the actuals so we have them.
+actuals <- test$sum_arith_perf
+View(actuals)
+# first, find scaling parameters.
+
+scale(training$score_BFI_N) # mean 23.51357, scale 6.272595
+scale(training$score_AMAS_total) # 18.04845, 6.730569
+scale(training$age) # 23.49612, 3.945501
+scale(training$score_GAD) # 12.60659, 4.08909
+scale(training$score_PISA_ME) # 20.59109, 3.308336
+scale(training$score_STAI_state_short) # 8.364341, 2.930756
+scale(training$score_TAI_short) # 11.09109, 3.856332
+scale(training$score_SDQ_L) # 13.71512, 2.443586
+scale(training$score_SDQ_M) # 11.77132, 3.165658
+# We then apply the exact same scaling to the test set. Since the test set is unseen data, we apply the TRAINING scaling parameters to the TEST set. We also do this so our predictions are not nonsensical.
+
+# Define the desired means and SDs for each predictor
+scaling_params <- list(
+  score_BFI_N = list(mean = 23.51357, sd = 6.272595),
+  score_AMAS_total = list(mean = 18.04845, sd = 6.730569),
+  age = list(mean = 23.49612, sd = 3.945501),
+  score_GAD = list(mean = 12.60659, sd = 4.08909),
+  score_PISA_ME = list(mean = 20.59109, sd = 3.308336),
+  score_STAI_state_short = list(mean = 8.364341, sd = 2.930756),
+  score_TAI_short = list(mean = 11.09109, sd = 3.856332),
+  score_SDQ_L = list(mean = 13.71512, sd = 2.443586),
+  score_SDQ_M = list(mean = 11.77132, sd = 3.165658)
+)
+
+# Apply scaling to 'age' and 'score_gad' using 'predictor' as the loop variable
+# Apply scaling to each variable in the test dataset
+for (predictor in names(scaling_params)) {
+  if (predictor %in% colnames(test)) { # Check if the predictor exists in the dataset
+    new_mean <- scaling_params[[predictor]]$mean
+    new_sd <- scaling_params[[predictor]]$sd
+
+    # C
+    # Overwrite the original predictor with the scaled version
+    test[[predictor]] <- (test[[predictor]] - new_mean) / new_sd
+  } else {
+    warning(paste("Variable", predictor, "not found in test dataset."))
+  }
+}
+
+
+
+# View the dataset with the overwritten variables
+View(test)
+
+# Then, find predictions.
+# 10 variable model
+predictionsmtry2 <- predict(rf_mtry2, newdata = test)
+testmtry2 <- data.frame(
+  R2 = R2(predictionsmtry2, test$ sum_arith_perf), ## this calculates some kind of pseudo R squared. The manual formula-derived R squared is just below under "standard R2 formula".
+  RMSE = RMSE(predictionsmtry2, test$ sum_arith_perf),
+  MAE = MAE(predictionsmtry2, test$ sum_arith_perf)
+)
+print(testmtry2)
+# Standard R2 formula
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionsmtry2 - actuals)^2) # Sum of Squared Errors for mtry2
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares for mtry2
+R_squared <- 1 - (SSE / SST)
+R_squared # we'll use this soon.
+
+
+###
+# first selection
+predictionsfirstselection <- predict(rf_firstselection, newdata = test) # you're predicting test data from the model built on training data.
+validationfirstselection <- data.frame(
+  R2 = R2(predictionsfirstselection, test$ sum_arith_perf),
+  RMSE = RMSE(predictionsfirstselection, test$ sum_arith_perf),
+  MAE = MAE(predictionsfirstselection, test$ sum_arith_perf)
+)
+print(validationfirstselection)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionsfirstselection - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+
+
+
+###
+### Second selection
+predictionssecondselection <- predict(rf_secondselection, test)
+validationsecondselection <- data.frame(
+  R2 = R2(predictionssecondselection, test$ sum_arith_perf),
+  RMSE = RMSE(predictionssecondselection, test$ sum_arith_perf),
+  MAE = MAE(predictionssecondselection, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationsecondselection)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionssecondselection - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+
+
+#### Third selection
+predictionsthirdselection <- predict(rf_thirdselection, test)
+validationthirdselection <- data.frame(
+  R2 = R2(predictionsthirdselection, test$ sum_arith_perf),
+  RMSE = RMSE(predictionsthirdselection, test$ sum_arith_perf),
+  MAE = MAE(predictionsthirdselection, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationthirdselection)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionsthirdselection - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+
+
+###### fourth selection
+predictionsfourthselection <- predict(rf_fourthselection, test)
+validationfourthselection <- data.frame(
+  R2 = R2(predictionsfourthselection, test$ sum_arith_perf),
+  RMSE = RMSE(predictionsfourthselection, test$ sum_arith_perf),
+  MAE = MAE(predictionsfourthselection, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationfourthselection)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionsfourthselection - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+## BEST PREDICTIVE MODEL!
+
+##### fifth selection
+predictionsfifthselection <- predict(rf_fifthselection, test)
+validationfifthselection <- data.frame(
+  R2 = R2(predictionsfifthselection, test$ sum_arith_perf),
+  RMSE = RMSE(predictionsfifthselection, test$ sum_arith_perf),
+  MAE = MAE(predictionsfifthselection, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationfifthselection)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionsfifthselection - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+
+
+#### sixth selection
+predictionssixthselection <- predict(rf_sixthselection, test)
+validationsixthselection <- data.frame(
+  R2 = R2(predictionssixthselection, test$ sum_arith_perf),
+  RMSE = RMSE(predictionssixthselection, test$ sum_arith_perf),
+  MAE = MAE(predictionssixthselection, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationsixthselection)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionssixthselection - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+
+
+### two variablemodel
+predictionstwovariablemodel <- predict(rf_strongestvariables4, test)
+validationtwovariablemodel <- data.frame(
+  R2 = R2(predictionstwovariablemodel, test$ sum_arith_perf),
+  RMSE = RMSE(predictionstwovariablemodel, test$ sum_arith_perf),
+  MAE = MAE(predictionstwovariablemodel, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationtwovariablemodel)
+
+actuals <- test$sum_arith_perf
+SSE <- sum((predictionstwovariablemodel - actuals)^2) # Sum of Squared Errors
+SST <- sum((actuals - mean(actuals))^2) # Total Sum of Squares
+R_squared <- 1 - (SSE / SST)
+R_squared
+
+
+
+
+#### Just to double check our code above.
+```
+
+Like we posited earlier, the full model did indeed turn out to be the best model for prediction. Our parsimonious model turned out to be one of the best models for prediction (though seemingly worse than the 10, 9 and 8 variable models), and our in-between models with the 4/5 most key variables, despite predicting the train data the best, predicted the test set the worst. Thus, feature selection in this case turned out to be wholly unnecessary for prediction, and was only useful for identifying a parsimonious model and the "strongest" (but not best at predicting) predictors from the list of ten. This may happen in psychology data because of the relatively small effect sizes of even some of the best predictors - this is why train/test splitting (or train, test, validation splitting) is important. Therefore, if we were only looking to predict arithmetic performance in German students, it would be best to use the full model or use another algorithmic variable selection method, such as LASSO (which we will use in an addendum shortly). If we were more interested in describing the most important predictors in this dataset than prediction, the two-variable model would be a good choice. The 4-5 variable models might also be a good choice to explain a few additional key predictors, but given the poor fit of the model on test data, I would not be so convinced. I would again try some additional algorithmic variable selection methods to see if there was a better fitting model in that range.
+
+I want to finish by reminding you that random forests are random, so you will get a new model every time you run the train command. With good predictors and excellent repeated cross validation, it won't change much, but it will change. The "stepwise" procedure I followed here was primarily for narrative purposes and may not be the best choice to build the single best model at prediction or another task, but it will allow you to evaluate the variable importance at each step and see how the different models predict the data (and which variables they emphasize). This will help you to select the model that best fits your goal of parsimony, variable selection, prediction, all three, or another goal. Of course, if you have a lot of predictors, it may be best for you to use an automatic method such as VSURF, which is very similar to the process we utilized but tuned with an algorithm it attempts to optimize rather than with our statistical knowledge.
+
+TRYING OUT MODELS SIMILAR TO THOSE LASSO SUGGESTED.
+
+```{r}
+#| warning: false
+set.seed(59)
+rf_lassopretest <- train(sum_arith_perf ~ sex + score_TAI_short + score_STAI_state_short + score_PISA_ME + score_SDQ_M + score_SDQ_L + age, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_lassopretest)
+
+rf_lassopretest$dev.ratio
+
+set.seed(58)
+rf_lassopretest2 <- train(sum_arith_perf ~ sex + score_TAI_short + score_STAI_state_short + score_PISA_ME + score_SDQ_M + age, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_lassopretest2)
+
+
+
+set.seed(60)
+rf_lassotest <- train(sum_arith_perf ~ sex + score_TAI_short + score_STAI_state_short + score_PISA_ME + score_SDQ_M + score_SDQ_L, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_lassotest)
+varImpPlot(rf_strongestvariables$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.1059
+# MSE: 6.596
+
+
+set.seed(61)
+rf_lassotest2 <- train(sum_arith_perf ~ sex + score_TAI_short + score_STAI_state_short + score_PISA_ME + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_lassotest2)
+varImpPlot(rf_lassotest2$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.1059
+# MSE: 6.596
+
+set.seed(62)
+rf_lassotest3 <- train(sum_arith_perf ~ sex + score_STAI_state_short + score_PISA_ME + score_SDQ_M + score_SDQ_L, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_lassotest3)
+varImpPlot(rf_lassotest3$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.1059
+# MSE: 6.596
+
+
+
+set.seed(63)
+rf_lassotest4 <- train(sum_arith_perf ~ sex + score_STAI_state_short + score_PISA_ME + score_SDQ_M, data = scaled_training, method = "rf", importance = TRUE, tuneGrid = tunegrid, trControl = control)
+print(rf_lassotest4)
+varImpPlot(rf_lassotest4$finalModel, type = 1) # type 1 refers to estimates following perturbation.
+# R2: 0.1059
+# MSE: 6.596
+
+######
+#### predictions
+predictionslassotest <- predict(rf_lassotest, test)
+validationlassotest <- data.frame(
+  R2 = R2(predictionslassotest, test$ sum_arith_perf),
+  RMSE = RMSE(predictionslassotest, test$ sum_arith_perf),
+  MAE = MAE(predictionslassotest, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationlassotest)
+
+
+predictionslassotest2 <- predict(rf_lassotest2, test)
+validationlassotest2 <- data.frame(
+  R2 = R2(predictionslassotest2, test$ sum_arith_perf),
+  RMSE = RMSE(predictionslassotest2, test$ sum_arith_perf),
+  MAE = MAE(predictionslassotest2, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationlassotest2)
+
+predictionslassotest3 <- predict(rf_lassotest3, test)
+validationlassotest3 <- data.frame(
+  R2 = R2(predictionslassotest3, test$ sum_arith_perf),
+  RMSE = RMSE(predictionslassotest3, test$ sum_arith_perf),
+  MAE = MAE(predictionslassotest3, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationlassotest3)
+
+predictionslassotest4 <- predict(rf_lassotest4, test)
+validationlassotest4 <- data.frame(
+  R2 = R2(predictionslassotest4, test$ sum_arith_perf),
+  RMSE = RMSE(predictionslassotest4, test$ sum_arith_perf),
+  MAE = MAE(predictionslassotest4, test$ sum_arith_perf)
+) # these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+print(validationlassotest4)
+
+predictionslassopretest <- predict(rf_lassopretest, test)
+validationlassopretest <- data.frame(
+  R2 = R2(predictionslassopretest, test$ sum_arith_perf),
+  RMSE = RMSE(predictionslassopretest, test$ sum_arith_perf),
+  MAE = MAE(predictionslassopretest, test$ sum_arith_perf)
+)
+print(validationlassopretest)
+# these statistical functions are in caret technically under trainControl(), which passes this argument through defaultSummary() I believe.
+
+predictionslassopretest2 <- predict(rf_lassopretest2, test)
+validationlassopretest2 <- data.frame(
+  R2 = R2(predictionslassopretest2, test$ sum_arith_perf),
+  RMSE = RMSE(predictionslassopretest2, test$ sum_arith_perf),
+  MAE = MAE(predictionslassopretest2, test$ sum_arith_perf)
+)
+print(validationlassopretest2)
+```
+
+Overall, the best predictive model of our test set was our fourth selection, which included some anxiety variables. These anxiety variables also showed up when using different values of lambda in the LASSO model. It does indeed seem as though the inclusions of at least state anxiety and possibly test anxiety may be able to create a better predictive model than when they are excluded.
+
+Add more here! And review!
+
+I think I should add more interpretation, at least of like. Maybe variable relationships and strength of those relationships IF possible.
+
+Check out lintr! it automatically checks your code to stick to a certain style! You should clean up this code cause its ugly as fuck! or maybe like tidyr worse comes to worst. OR can have your own style, but that sounds hard! ALso one called STYLER! USED IT!!! WHAT DID IT LEAVE LEFT OVER??????
+
+Long lines. Gotta make long lines shorter (maybe can automatically wrap it, but u probably can do it yourself)
+
+```{r}
+library(styler)
+
+style_file("/Users/frankie/Desktop/Dr. Lai Feature Selection Project 9.13.24/Main Script/hello.qmd", scope = "line_breaks", strict = TRUE)
+```
