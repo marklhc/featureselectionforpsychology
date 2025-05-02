@@ -13,6 +13,7 @@ format:
     toc-float: true
     toc-scroll: true
     css: styles.css
+    keep-md: true
     
 knitr:
   opts_chunk: 
@@ -132,12 +133,9 @@ Below, I'll use the `here()` function to tell the `readr()` function where to go
 
 ```{r}
 #| label: Import and clean data
-here::i_am("Dr. Lai Feature Selection Project 9.13.24.rproj")
-# I manually set "here" to the folder containing my rproj file.
-
-file_path <- normalizePath(here::here(
-  "Main Script/OSF archive/AMATUS_dataset.csv"
-))
+file_path <- here::here(
+  "OSF archive/AMATUS_dataset.csv"
+)
 # Also adjust this as needed. Function from base R.
 
 # Importing dataset
@@ -145,7 +143,7 @@ amatus <- readr::read_csv2(file_path, c("", "NA"), col_names = TRUE)
 # Note that the `c()` function is defining
 # what NA values look like for the import function.
 
-View(amatus)
+head(amatus)
 # View the data.
 
 amatusclean <- amatus[!is.na(amatus$sum_arith_perf), ]
@@ -156,7 +154,7 @@ amatusclean <- amatusclean[!(amatusclean$sample %in%
 # Removing the 2 teacher samples from the dataset, as I am only # interested in
 # the student sample.
 
-View(amatusclean)
+head(amatusclean)
 
 # Data cleaning (using tidyverse syntax this time around):
 amatusclean <- amatusclean %>%
@@ -181,7 +179,7 @@ amatusclean <- amatusclean %>%
     `5` = 2,
     `6` = 1
   ))
-View(amatusclean)
+head(amatusclean)
 
 invisible(colSums(is.na(amatusclean)))
 # It appears there is only one NA value in the variables of interest from the
@@ -341,8 +339,8 @@ inTrain <- caret::createDataPartition(amatusclean$sum_arith_perf,
 # Create training vs test data using subsetting.
 training <- amatusclean[inTrain, ]
 test <- amatusclean[-inTrain, ]
-View(training)
-View(test)
+head(training)
+head(test)
 ```
 
 ### A Note on Feature/Variable Selection
@@ -358,7 +356,7 @@ Below, I describe four hyperparameters - `mtry`, node size, number of trees and 
 
 1.  The hyperparameter `mtry` defines the number of randomly selected predictors to consider splitting at each node of the decision tree, ranging from 1 to *p*, the number of predictor variables. If you expect many relevant predictors with varying effect sizes, mtry should likely be set low since less influential variables will still be chosen and could provide performance gains. If you expect only a few relevant variables out of many (possibly hundreds), mtry should likely be set high so the algorithm can better find relevant variables [@probst_hyperparameters_2019].
 
-    i)  The default value for regression in many packages is *p*/3, which has been shown to perform well enough. However, Genuer and colleagues [-@genuer_random_2008] have shown that in low dimensional regression problems (such as the one at hand), the square root of *p* performs better, which would be about 4.472 for my analysis. I will tune the `mtry` value, but will also create models with "default" values for hyperparameters for comparison.
+    i.  The default value for regression in many packages is *p*/3, which has been shown to perform well enough. However, Genuer and colleagues [-@genuer_random_2008] have shown that in low dimensional regression problems (such as the one at hand), the square root of *p* performs better, which would be about 4.472 for my analysis. I will tune the `mtry` value, but will also create models with "default" values for hyperparameters for comparison.
 
 2.  The hyperparameter `nodesize` describes the minimum number of data points in a leaf/terminal node. It sets the "depth" of trees, meaning that a lower setting leads to more splits being performed until reaching the terminal nodes, which contain fewer observations. The default value is 5 for regression in most statistical packages. Increasing the number of noise variables has been shown to lead to higher optimal node size [@segal_machine_2003] and a higher value is computationally preferable. It has also been shown that higher `nodesize` values lead to overfitting on probability estimation [@barrenada_understanding_2024], though this only applies to probability estimation. Again, though I will tune these hyperparameters, I will build other models with default values.
 
@@ -366,7 +364,7 @@ Below, I describe four hyperparameters - `mtry`, node size, number of trees and 
 
 4.  The hyperparameter "sample size" decides how many observations are sampled when training each decision tree. The default value is usually *n*. If you have a lower value than that, whether you are sampling with or without replacement also becomes a key matter (discussed later). Martinez-Munoz and Suarez [-@martinez-munoz_outbag_2010] observed that in most datasets, a sample size lower than the standard option tended to produce better performance.
 
-A side note: There are several different validation strategies for a given algorithm that you can use in `caret` or `ranger` or whichever package you use, including bootstrapping, cross-validation, and repeated cross-validation. For random forest, you can also use out-of-bag predictions, which evaluates model performance on the data not selected when the data was bootstrapped as part of the bootstrap/aggregation process. Repeated cross-validation is often optimal when computationally appropriate. However, I will use out-of-bag error to save time and because it is appropriate and reliable for many datasets, as results appear to only be biased in extreme situations (e.g., *n* \< 20 with hundreds/thousands of predictors; see [@janitza_overestimation_2018].
+A side note: There are several different validation strategies for a given algorithm that you can use in `caret` or `ranger` or whichever package you use, including bootstrapping, cross-validation, and repeated cross-validation. For random forest, you can also use out-of-bag predictions, which evaluates model performance on the data not selected when the data was bootstrapped as part of the bootstrap/aggregation process. Repeated cross-validation is often optimal when computationally appropriate. However, I will use out-of-bag error to save time and because it is appropriate and reliable for many datasets, as results appear to only be biased in extreme situations [e.g., *n* \< 20 with hundreds/thousands of predictors\; see @janitza_overestimation_2018].
 
 ## Tuning Packages in R
 
